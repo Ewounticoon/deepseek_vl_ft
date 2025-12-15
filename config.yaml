@@ -29,7 +29,7 @@ training:
   weight_decay: 0.0
   batch_size: 1
   grad_accum: 16
-  max_steps: 1000
+  max_steps: 3000
   save_every: 500
   log_every: 10
   num_workers: 2
