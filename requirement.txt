@@ -1,0 +1,11 @@
+torch
+torchvision
+torchaudio
+transformers>=4.45
+accelerate>=0.34
+datasets>=2.20
+peft>=0.12
+pillow>=10.0
+pyyaml
+tqdm
+bitsandbytes
