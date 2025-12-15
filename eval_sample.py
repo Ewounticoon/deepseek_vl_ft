@@ -38,6 +38,8 @@ def user_assistant_from_conversations(convs):
 
 def to_deepseek_conversation(sample, image_root, strip_prefix=None, system_prompt=None):
     user_text, target_md = user_assistant_from_conversations(sample["conversations"])
+
+    # prompt image
     user_text = user_text.replace("<image>", "<image_placeholder>")
     if "<image_placeholder>" not in user_text:
         user_text = "<image_placeholder>\n" + user_text
@@ -46,10 +48,13 @@ def to_deepseek_conversation(sample, image_root, strip_prefix=None, system_promp
         user_text = system_prompt.strip() + "\n\n" + user_text
 
     img_path = resolve_image_path(image_root, sample["image"], strip_prefix)
-    return [
+
+    # ✅ IMPORTANT: on NE met PAS target_md dans la conversation envoyée au modèle
+    conv = [
         {"role": "User", "content": user_text, "images": [img_path]},
-        {"role": "Assistant", "content": target_md},
-    ], target_md
+        {"role": "Assistant", "content": ""},  # assistant "vide" pour déclencher la génération
+    ]
+    return conv, target_md
 
 def cer(pred, ref):
     # char error rate (1 - similarity)
@@ -94,6 +99,7 @@ def main():
     ap.add_argument("--out_dir", default="reports/before")
     ap.add_argument("--max_samples", type=int, default=20)
     ap.add_argument("--max_new_tokens", type=int, default=512)
+    ap.add_argument("--system_prompt", default=None, help="System prompt injected before user message")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -135,11 +141,19 @@ def main():
         rep.write(f"- samples: {len(samples)}\n\n")
 
         for s in tqdm(samples, desc="eval"):
-            conv, ref = to_deepseek_conversation(s, args.image_root, args.strip_prefix, system_prompt=None)
+            conv, ref = to_deepseek_conversation(s, args.image_root, args.strip_prefix, system_prompt=args.system_prompt)
             pil_images = load_pil_images(conv)
-            batch = processor(conversations=conv, images=pil_images, force_batchify=True).to("cuda")
+            batch = processor(conversations=conv, images=pil_images, force_batchify=True)
+
+# move to GPU
+            batch = batch.to("cuda")
+
+# force vision inputs dtype to fp16 (fix bf16 vs fp16 mismatch)
+            if hasattr(batch, "pixel_values") and batch.pixel_values is not None:
+                batch.pixel_values = batch.pixel_values.to(torch.float16)
 
             inputs_embeds = model.prepare_inputs_embeds(**batch)
+            inputs_embeds = inputs_embeds.to(torch.float16)
             out = model.language_model.generate(
                 inputs_embeds=inputs_embeds,
                 attention_mask=batch.attention_mask,

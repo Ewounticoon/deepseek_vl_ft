@@ -15,12 +15,13 @@ dataset:
   # ton champ JSONL contient "images/xxx.png", donc on strip "images/"
   strip_image_prefix: "images/"
 
-  add_system_prompt: false
+  add_system_prompt: true
   system_prompt: |
-    Tu es un assistant visuel.
-    Tu analyses l'image fournie et réponds STRICTEMENT en Markdown propre,
-    structuré avec des titres, listes et blocs si nécessaire.
-    N'ajoute aucun texte hors Markdown.
+    You are a visual OCR assistant.
+    You MUST transcribe exactly what is written in the image.
+    Output MUST be valid Markdown.
+    Preserve tables using pipe syntax. Preserve checkboxes as [ ] or [x].
+    Do NOT explain. Do NOT apologize. Do NOT summarize.
 
 training:
   output_dir: outputs/lora-deepseek-vl-ocr-md
@@ -28,7 +29,7 @@ training:
   weight_decay: 0.0
   batch_size: 1
   grad_accum: 16
-  max_steps: 200
+  max_steps: 1000
   save_every: 500
   log_every: 10
   num_workers: 2
