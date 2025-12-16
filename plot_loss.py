@@ -1,20 +1,20 @@
-import csv, os
+# plot_loss.py
+import argparse, json
 import matplotlib.pyplot as plt
 
-csv_path = "outputs/TON_OUTPUT_DIR/loss.csv"   # change
-out_png  = "outputs/TON_OUTPUT_DIR/loss.png"   # change
+ap = argparse.ArgumentParser()
+ap.add_argument("--log", required=True)
+ap.add_argument("--out", required=True)
+args = ap.parse_args()
 
+hist = json.load(open(args.log, "r", encoding="utf-8"))
 steps, losses = [], []
-with open(csv_path, "r") as f:
-    r = csv.DictReader(f)
-    for row in r:
-        steps.append(int(row["step"]))
-        losses.append(float(row["loss"]))
+for row in hist:
+    if "loss" in row and "step" in row:
+        steps.append(row["step"]); losses.append(row["loss"])
 
 plt.figure()
 plt.plot(steps, losses)
-plt.xlabel("step")
-plt.ylabel("loss")
-plt.title("Training loss")
-plt.savefig(out_png, dpi=200)
-print("✅ saved", out_png)
+plt.xlabel("step"); plt.ylabel("loss"); plt.title("Training loss")
+plt.savefig(args.out, dpi=160, bbox_inches="tight")
+print("Saved:", args.out)
