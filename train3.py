@@ -220,23 +220,23 @@ def main(cfg_path, resume_from_checkpoint=None):
     # -------------------------
     # (2) anti-outlier: ajouter text_len
     # -------------------------
-    train_ds = train_ds.map(lambda ex: add_total_len(ex, processor))
-    eval_ds  = eval_ds.map(lambda ex: add_total_len(ex, processor))
-    
-    MAX_TOTAL_TOKENS = 8000
-# -------------------------
+    train_ds = train_ds.map(lambda ex: add_text_len(ex, processor))
+    eval_ds  = eval_ds.map(lambda ex: add_text_len(ex, processor))
+
+    # -------------------------
     # (3) anti-outlier: filtrer les très longs
     # -------------------------
     max_text_tokens = int(cfg["train"].get("max_text_tokens", 2800))
     print(f"[INFO] Filtering examples with text_len > {max_text_tokens}")
 
     before = len(train_ds)
-    train_ds = train_ds.filter(lambda ex: ex["total_len"] <= MAX_TOTAL_TOKENS)
+    train_ds = train_ds.filter(lambda ex: ex["text_len"] <= max_text_tokens)
+    train_ds = train_ds.filter(lambda ex: ex["id"] != "doc_0651_p0012")
     after = len(train_ds)
     print(f"[INFO] Train filtered: {before} -> {after} (removed {before-after})")
 
     before = len(eval_ds)
-    eval_ds  = eval_ds.filter(lambda ex: ex["total_len"] <= MAX_TOTAL_TOKENS)
+    eval_ds = eval_ds.filter(lambda ex: ex["text_len"] <= max_text_tokens)
     after = len(eval_ds)
     print(f"[INFO] Eval filtered: {before} -> {after} (removed {before-after})")
 
