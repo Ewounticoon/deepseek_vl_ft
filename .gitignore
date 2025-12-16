@@ -4,7 +4,8 @@ outputs/**
 # …but keep these two folders tracked
 !outputs/baseline/
 !outputs/baseline/**
-
+!outputs/eval_after_ft/**
+!outputs/eval_after_ft/
 !outputs/after_ft/
 !outputs/after_ft/**
 
