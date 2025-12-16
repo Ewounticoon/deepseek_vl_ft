@@ -26,6 +26,30 @@ def load_cfg(p):
         return yaml.safe_load(f)
 
 
+def total_token_len(processor, messages):
+    text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    inputs = processor(
+        text=[text],
+        images=[image_inputs],
+        videos=[video_inputs] if video_inputs else None,
+        truncation=False,
+        padding=False,
+        return_tensors="pt",
+    )
+
+    return inputs["input_ids"].shape[1]
+def add_total_len(example, processor):
+    example["total_len"] = total_token_len(processor, example["messages"])
+    return example
+
+
 def text_token_len(processor, messages):
     """
     Mesure le nombre de tokens (texte) du prompt complet (user+assistant),
@@ -170,10 +194,8 @@ def main(cfg_path, resume_from_checkpoint=None):
     data_root = Path(cfg["data"]["data_root"]).resolve()
     ds = load_from_disk(cfg["data"]["hf_dataset_dir"])
 
-
     train_ds = ds[cfg["data"]["train_split"]]
     eval_ds  = ds[cfg["data"]["eval_split"]]
-
 
     train_ds = train_ds.map(
         prepare_example,
@@ -186,8 +208,46 @@ def main(cfg_path, resume_from_checkpoint=None):
         remove_columns=eval_ds.column_names,
     )
 
-
+    # -------------------------
+    # (1) model_id + processor tôt
+    # -------------------------
     model_id = cfg["model"]["base_model"]
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    # (optionnel mais bien pour SFT)
+    processor.tokenizer.padding_side = "right"
+
+    # -------------------------
+    # (2) anti-outlier: ajouter text_len
+    # -------------------------
+    train_ds = train_ds.map(lambda ex: add_total_len(ex, processor))
+    eval_ds  = eval_ds.map(lambda ex: add_total_len(ex, processor))
+    
+    MAX_TOTAL_TOKENS = 8000
+# -------------------------
+    # (3) anti-outlier: filtrer les très longs
+    # -------------------------
+    max_text_tokens = int(cfg["train"].get("max_text_tokens", 2800))
+    print(f"[INFO] Filtering examples with text_len > {max_text_tokens}")
+
+    before = len(train_ds)
+    train_ds = train_ds.filter(lambda ex: ex["total_len"] <= MAX_TOTAL_TOKENS)
+    after = len(train_ds)
+    print(f"[INFO] Train filtered: {before} -> {after} (removed {before-after})")
+
+    before = len(eval_ds)
+    eval_ds  = eval_ds.filter(lambda ex: ex["total_len"] <= MAX_TOTAL_TOKENS)
+    after = len(eval_ds)
+    print(f"[INFO] Eval filtered: {before} -> {after} (removed {before-after})")
+
+    # (optionnel debug) top 5 plus longs restants
+    # longest = train_ds.sort("text_len", reverse=True).select(range(min(5, len(train_ds))))
+    # for ex in longest:
+    #     print("[LONG]", ex["text_len"], ex["id"])
+
+    # -------------------------
+    # le reste inchangé: model / lora / trainer
+    # -------------------------
     out_dir = Path(cfg["train"]["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,8 +264,6 @@ def main(cfg_path, resume_from_checkpoint=None):
         dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         quantization_config=qcfg,
     )
-
-    processor = AutoProcessor.from_pretrained(model_id)
 
     peft = cfg["lora"]
     peft_config = LoraConfig(
