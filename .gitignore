@@ -1,19 +1,21 @@
-# HuggingFace dataset cache
-data/hf_dataset/**
-
-# Training outputs
+# Ignore everything in outputs by default
 outputs/**
+
+# …but keep these two folders tracked
+!outputs/baseline/
+!outputs/baseline/**
+
+!outputs/after_ft/
+!outputs/after_ft/**
+
+# Still ignore common training junk anywhere
 **/checkpoint-*/
 **/*.tfevents*
 **/events.out.tfevents.*
-
-# Torch / Trainer states
 **/optimizer.pt
 **/scheduler.pt
 **/rng_state.pth
 **/training_args.bin
-
-# Model weights
 **/*.safetensors
 **/*.pt
 **/*.pth
