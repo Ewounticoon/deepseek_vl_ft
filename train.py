@@ -11,58 +11,73 @@ from trl import SFTTrainer, SFTConfig
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
+
 import copy
 
-def sanitize_messages_strict(messages):
+def sanitize_messages_ultra(messages):
     m = copy.deepcopy(messages)
+    out = []
     for msg in m:
-        if "content" not in msg:
-            continue
+        role = msg.get("role")
+        content = msg.get("content", [])
         new_content = []
-        for c in msg["content"]:
+        for c in content:
             t = c.get("type")
-            if t == "image":
-                if c.get("image") is None:
-                    raise ValueError("Found an image block with image=None")
-                new_content.append({"type": "image", "image": c["image"]})
-            elif t == "text":
-                if c.get("text") is None:
-                    continue
-                new_content.append({"type": "text", "text": c["text"]})
-            else:
-                new_content.append(c)
-        msg["content"] = new_content
-    return m
 
-def format_example(processor, example):
-    # messages already sanitized
+            # If type missing, try to infer
+            if t is None:
+                if "image" in c:
+                    t = "image"
+                elif "text" in c:
+                    t = "text"
+
+            if t == "image":
+                img = c.get("image", None)
+                if not isinstance(img, str) or len(img.strip()) == 0:
+                    # keep it explicit so we catch bad rows early
+                    raise ValueError("Found image block with invalid `image` value")
+                new_content.append({"type": "image", "image": img})
+
+            elif t == "text":
+                txt = c.get("text", None)
+                if not isinstance(txt, str) or len(txt.strip()) == 0:
+                    continue
+                new_content.append({"type": "text", "text": txt})
+
+            else:
+                # Drop unknown multimodal types to avoid surprising qwen_vl_utils
+                # or keep them if you need later
+                pass
+
+        out.append({"role": role, "content": new_content})
+    return out
+
+def format_example(example, processor):
     messages = example["messages"]
 
-    # Full conversation (user + assistant) so the model learns the assistant part
     text = processor.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=False
     )
 
-    # Extract the image(s) from the messages
-    image_inputs, video_inputs = process_vision_info(messages)
-
-    if len(image_inputs) != 1:
-        # In your dataset, it should be exactly 1 image per example
-        raise ValueError(f"Expected 1 image, got {len(image_inputs)} for id={example.get('id')}")
-
+    # IMPORTANT: ne pas toucher aux images ici
     return {
         "text": text,
-        "image_inputs": image_inputs,   # list length 1
-        "video_inputs": video_inputs,
+        "messages": messages
     }
 
 
 def collate_fn(processor, batch):
-    texts = [b["text"] for b in batch]
-    images = [b["image_inputs"] for b in batch]  # list of list-of-images
-    videos = [b["video_inputs"] for b in batch]
+    texts = []
+    images = []
+    videos = []
+
+    for b in batch:
+        texts.append(b["text"])
+        img_in, vid_in = process_vision_info(b["messages"])
+        images.append(img_in)
+        videos.append(vid_in)
 
     inputs = processor(
         text=texts,
@@ -72,7 +87,6 @@ def collate_fn(processor, batch):
         return_tensors="pt",
     )
 
-    # Standard SFT: labels = input_ids (masking is handled by chat template structure)
     inputs["labels"] = inputs["input_ids"].clone()
     return inputs
 
@@ -84,39 +98,49 @@ def main(cfg_path):
     cfg = load_cfg(cfg_path)
     torch.manual_seed(cfg.get("seed", 42))
 
-    ds = load_from_disk(cfg["data"]["hf_dataset_dir"])
-    train_ds = ds[cfg["data"]["train_split"]]
-    eval_ds  = ds[cfg["data"]["eval_split"]]
-
-    def sanitize_example(ex):
-        ex["messages"] = sanitize_messages_strict(ex["messages"])
-        return ex
-
-    train_ds = train_ds.map(sanitize_example)
-    eval_ds  = eval_ds.map(sanitize_example)
-
-    train_fmt = train_ds.map(
-        lambda ex: format_example(processor, ex),
-        remove_columns=train_ds.column_names,
-    )
-
-    eval_fmt = eval_ds.map(
-        lambda ex: format_example(processor, ex),
-        remove_columns=eval_ds.column_names,
-    )
-
     model_id = cfg["model"]["base_model"]
     out_dir = cfg["train"]["output_dir"]
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
+    # 1) Load model + processor FIRST (processor is needed for apply_chat_template and vision processing)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id,
         device_map="auto",
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        load_in_4bit=True,  # QLoRA style
+        load_in_4bit=True,
     )
     processor = AutoProcessor.from_pretrained(model_id)
 
+    # 2) Load dataset
+    ds = load_from_disk(cfg["data"]["hf_dataset_dir"])
+    train_ds = ds[cfg["data"]["train_split"]]
+    eval_ds  = ds[cfg["data"]["eval_split"]]
+
+    # 3) Sanitize messages once
+    def sanitize_example(ex):
+        try:
+            ex["messages"] = sanitize_messages_ultra(ex["messages"])
+            return ex
+        except Exception as e:
+            raise RuntimeError(f"Sanitize failed for id={ex.get('id')} image_path={ex.get('image_path')} -> {e}")
+    
+    train_ds = train_ds.map(sanitize_example)
+    eval_ds  = eval_ds.map(sanitize_example)
+
+    # 4) Format dataset to explicit multimodal inputs (text + images/videos)
+    train_fmt = train_ds.map(
+        format_example,
+        fn_kwargs={"processor": processor},
+        remove_columns=train_ds.column_names,
+    )
+
+    eval_fmt = eval_ds.map(
+        format_example,
+        fn_kwargs={"processor": processor},
+        remove_columns=eval_ds.column_names,
+    )
+
+    # 5) Add LoRA
     lora = cfg["lora"]
     lora_cfg = LoraConfig(
         r=lora["r"],
@@ -129,6 +153,7 @@ def main(cfg_path):
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
 
+    # 6) Trainer config
     tcfg = cfg["train"]
     sft_cfg = SFTConfig(
         output_dir=str(out_dir),
@@ -145,25 +170,25 @@ def main(cfg_path):
         report_to=tcfg.get("report_to", ["tensorboard"]),
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and (not torch.cuda.is_bf16_supported()),
-    
         remove_unused_columns=False,
         max_length=tcfg["max_seq_length"],
     )
 
+    # 7) Train (IMPORTANT: use train_fmt/eval_fmt)
     trainer = SFTTrainer(
         model=model,
         args=sft_cfg,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
+        train_dataset=train_fmt,
+        eval_dataset=eval_fmt,
         data_collator=lambda batch: collate_fn(processor, batch),
     )
+
     trainer.train()
 
-    # save adapter + processor
+    # 8) Save adapter + processor + logs
     trainer.model.save_pretrained(out_dir)
     processor.save_pretrained(out_dir)
 
-    # save loss history for plotting
     (Path(out_dir) / "trainer_log_history.json").write_text(
         json.dumps(trainer.state.log_history, indent=2, ensure_ascii=False),
         encoding="utf-8",

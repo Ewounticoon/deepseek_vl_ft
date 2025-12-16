@@ -4,6 +4,7 @@ data:
   hf_dataset_dir: "data/hf_dataset"
   train_split: "train"
   eval_split: "eval"
+  data_root: data
 
 model:
   base_model: "Qwen/Qwen2.5-VL-7B-Instruct"
