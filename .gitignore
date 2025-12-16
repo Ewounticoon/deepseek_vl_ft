@@ -1,0 +1,20 @@
+# HuggingFace dataset cache
+data/hf_dataset/**
+
+# Training outputs
+outputs/**
+**/checkpoint-*/
+**/*.tfevents*
+**/events.out.tfevents.*
+
+# Torch / Trainer states
+**/optimizer.pt
+**/scheduler.pt
+**/rng_state.pth
+**/training_args.bin
+
+# Model weights
+**/*.safetensors
+**/*.pt
+**/*.pth
+**/*.bin
