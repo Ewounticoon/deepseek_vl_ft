@@ -17,13 +17,13 @@ lora:
 
 train:
   output_dir: "outputs/finetuned"
-  max_steps: 5
+  max_steps: 900
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 1
   learning_rate: 2e-4
   warmup_steps: 0
-  logging_steps: 1
-  save_steps: 5
+  logging_steps: 10
+  save_steps: 50
   eval_steps: 5
-  max_seq_length: 4096
+  max_seq_length: 2048
   report_to: ["tensorboard"]

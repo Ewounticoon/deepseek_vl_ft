@@ -26,6 +26,31 @@ def load_cfg(p):
         return yaml.safe_load(f)
 
 
+def text_token_len(processor, messages):
+    """
+    Mesure le nombre de tokens (texte) du prompt complet (user+assistant),
+    sans toucher aux images.
+    """
+    text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False
+    )
+    # tokenizer pur, pas de truncation ici -> on veut détecter les outliers
+    ids = processor.tokenizer(
+        text,
+        add_special_tokens=False,
+        truncation=False
+    ).input_ids
+    return len(ids)
+
+
+def add_text_len(example, processor):
+    # exemple doit déjà avoir messages “sanitisés”
+    example["text_len"] = text_token_len(processor, example["messages"])
+    return example
+
+
 def sanitize_messages_strict(messages):
     """
     EXACTEMENT la même logique que eval.py
@@ -110,6 +135,7 @@ def build_collate_fn(processor):
             text=texts,
             images=image_inputs_all,
             padding=True,
+            truncation=True,
             return_tensors="pt",
         )
 
@@ -137,15 +163,17 @@ def build_collate_fn(processor):
 # -------------------------
 # Main
 # -------------------------
-def main(cfg_path):
+def main(cfg_path, resume_from_checkpoint=None):
     cfg = load_cfg(cfg_path)
     torch.manual_seed(int(cfg.get("seed", 42)))
 
     data_root = Path(cfg["data"]["data_root"]).resolve()
     ds = load_from_disk(cfg["data"]["hf_dataset_dir"])
 
+
     train_ds = ds[cfg["data"]["train_split"]]
     eval_ds  = ds[cfg["data"]["eval_split"]]
+
 
     train_ds = train_ds.map(
         prepare_example,
@@ -157,6 +185,7 @@ def main(cfg_path):
         fn_kwargs={"data_root_str": str(data_root)},
         remove_columns=eval_ds.column_names,
     )
+
 
     model_id = cfg["model"]["base_model"]
     out_dir = Path(cfg["train"]["output_dir"])
@@ -217,8 +246,7 @@ def main(cfg_path):
         peft_config=peft_config,
     )
 
-    trainer.train()
-
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(out_dir)
     processor.save_pretrained(out_dir)
 
@@ -234,5 +262,6 @@ def main(cfg_path):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--resume_from_checkpoint", type=str, default=None)
     args = ap.parse_args()
-    main(args.config)
+    main(args.config, args.resume_from_checkpoint)
