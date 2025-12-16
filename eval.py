@@ -14,6 +14,32 @@ from rouge_score import rouge_scorer
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
+import copy
+
+def sanitize_messages_strict(messages):
+    m = copy.deepcopy(messages)
+    for msg in m:
+        if "content" not in msg:
+            continue
+        new_content = []
+        for c in msg["content"]:
+            t = c.get("type")
+            if t == "image":
+                if c.get("image") is None:
+                    raise ValueError("Found an image block with image=None")
+                new_content.append({"type": "image", "image": c["image"]})
+            elif t == "text":
+                if c.get("text") is None:
+                    # optional: skip empty text blocks
+                    continue
+                new_content.append({"type": "text", "text": c["text"]})
+            else:
+                # keep unknown types as-is (rare)
+                new_content.append(c)
+        msg["content"] = new_content
+    return m
+
+
 def norm(s):
     return "\n".join([l.rstrip() for l in s.replace("\r\n","\n").replace("\r","\n").split("\n")]).strip()
 
@@ -23,16 +49,31 @@ def cer(ref, hyp):
         return 0.0 if len(hyp) == 0 else 1.0
     return Levenshtein.distance(ref, hyp) / len(ref)
 
+
 @torch.no_grad()
 def generate(model, processor, user_messages, max_new_tokens):
+    user_messages = sanitize_messages_strict(user_messages)
+
     text = processor.apply_chat_template(user_messages, tokenize=False, add_generation_prompt=True)
+
+    # Debug (temporaire) : combien de slots image dans le texte ?
+    # print("image placeholders in prompt:", text.count("<image>"))
+
     image_inputs, video_inputs = process_vision_info(user_messages)
-    inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    )
     inputs = inputs.to(model.device)
 
     out = model.generate(**inputs, max_new_tokens=max_new_tokens)
     trimmed = out[:, inputs.input_ids.shape[1]:]
     return processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+
 
 def main():
     ap = argparse.ArgumentParser()
