@@ -54,7 +54,7 @@ report.write_text(html, encoding="utf-8")
 with sync_playwright() as p:
     b = p.chromium.launch()
     page = b.new_page(viewport={"width": 1600, "height": 900})
-    page.goto(report.as_uri())
+    page.goto(report.resolve().as_uri())
     page.wait_for_timeout(300)
     page.screenshot(path=str(out_dir / "report.png"), full_page=True)
     b.close()
